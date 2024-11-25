@@ -24,7 +24,7 @@ uses AMDE188ES processor.
 #define V 10					// Number of running average
 #define VP 20
 #define BEG 10				// Starting point for integration
-#define FACTOR 1.0			// Software FACTOR for calculation of beam current changed the factor from 2.098 to 1.88 to 3.56 to .993
+#define FACTOR 10.0			// Software FACTOR for calculation of beam current changed the factor from 2.098 to 1.88 to 3.56 to .993
 #define SFault 450          // Software level for super fault
 #define PPICMD2 0x103		// PPI 1 (U5) command register for parallel port
 #define PPI10 0x100			// PPI 1 port 0
@@ -33,12 +33,24 @@ uses AMDE188ES processor.
 #define WAIT(n) {int i;\
 for(i=0;i<(n);i++);}
 
+union bits{
+	struct bitsforuse{
+		volatile unsigned int trigger:1;
+		volatile unsigned int times:1;
+		volatile unsigned int tripSet:1;
+		volatile unsigned int pageSelect:1;
+		volatile unsigned int tripreset:1;
+		volatile unsigned int testtrip:1;
+		volatile unsigned int NotUsed1:1;	
+		volatile unsigned int NotUsed2:1;
+	}tern;
+	volatile unsigned char dummy;
+}ten;// declaring a structure for reading toggled bits
 
 unsigned char store[V][K];		// Two dimensional array for storing digitized values from the FIFO
 unsigned long wave[V];			// One dimensional array for integrating beam individual waveforms
 unsigned long dispwave[VP];		// New One dimensional array for integrating beam used in display and DAC
 char buf2[24];					// Buffers used for ouputting text and values to LCD
-
 
 unsigned int i;					// Variable for integrating the individual waveforms
 unsigned int l;					// Variable for summing individual waveforms
@@ -49,9 +61,10 @@ int trig;                       // Variable for storing the trigger value global
 unsigned long dat1;  			// Variable for Storing beam trip point from the onboard A to D 
 double beamTrip=0.0;			// Variable used for converting the beam trip level to floating point
 
-long int fault,timer=0,timer2=0,timer1=0;		// Variables for timer operation to calculate frequency
+unsigned long fault,timer=0,timer2=0,timer1=0;		// Variables for timer operation to calculate frequency
 unsigned int t,t0,t1,ta,tb,tm;					// Variables for setting up timer operation
 unsigned long t0_int;								// Variable for the timer counter
+unsigned long t02=0;
 
 void interrupt far t0_isr (void);           // Subroutine for calculating the frequency
 void ppi_lcd_init(void);                    // Subroutine for initializing hantronix lcd
@@ -69,15 +82,19 @@ void main(void)
 	unsigned long house=0;			// Variable for integration of wave for housekeeping
 	volatile int gain=1;				// Variable to store value of gain (External Pre_amp) base on switch setting
 	int page=0;										// Variable to store LCD page to be displayed
+    int reset=0;
 	char ledd=0;										// Variable to use for blinking the LCD
 
 	volatile int btrip=0;				// Variable to latch the beam trip value for LCD display until reset is pressed
 	volatile int htrip=0;				// Variable to latch the house trip value for LCD display until reset is pressed
 	volatile int strip=0;				// Variable to latch the super charge trip value for LCD display until reset is pressed
-
+	volatile int freqlevel=0;
+    volatile int wdfault=0;
+	
 	int heart=0;					// Variable for LCD display purpose to show heartbeat from side to side
-	double hkavg=0.0;					// Variable used for housekeeping conversion to floating point
+	double hkavg=120.0;					// Variable used for housekeeping conversion to floating point
 	double beamavg=0.0;					// Variable used for beam average conversion to floating point
+
 	double beamavgDisp=0.0;
 	double freq=0.0;					// Variable used for storing frequency based on timers
 	double flevel=0.0;					// Variable used for storing the value that tripped the beam
@@ -85,6 +102,8 @@ void main(void)
 	double scharge=0.0;					// Variable used for storing each integration for supercharge checks
 	double slevel=0.0;					// Variable used for storing the Supercharge value if happened
 	double hkTrip=0.0;				// Variable used for storing the house keeping trip point based on the gain settings
+    double freqTrip=0.0;
+	double wdfaultlevel=0.0;
 	int fpbeam=0;						// Variable used for ouputing the beam value using the D/A to front panel
 	int remtrip=0;					// Variable used for ouputing the trip value of the beam using D/A to remote
 
@@ -95,19 +114,6 @@ void main(void)
 	char buf5[24];					// Buffers used for ouputting text and values to LCD
 	char buf6[24];					// Buffers used for ouputting text and values to LCD
 	char buf7[24];					// Buffers used for ouputting text and values to LCD
-	union bits{
-		struct bitsforuse{
-			volatile unsigned int trigger:1;
-			volatile unsigned int times:1;
-			volatile unsigned int tripSet:1;
-			volatile unsigned int pageSelect:1;
-			volatile unsigned int tripreset:1;
-			volatile unsigned int testtrip:1;
-			volatile unsigned int NotUsed1:1;	
-			volatile unsigned int NotUsed2:1;
-		}tern;
-		volatile unsigned char dummy;
-	}ten;// declaring a structure for reading toggled bits
 	ae_init();									// Initialization routines for TERN
 	Acminit();									// Initialization for ACM variables
 	while(1)
@@ -118,6 +124,7 @@ void main(void)
 		if(ten.tern.trigger==1)						// If there is trigger continue if not fall back into the while loop
 			continue;
 		page=ten.tern.pageSelect;
+		reset=ten.tern.tripreset;
 		//while( 0x01&inportb(CS_80M+0xb0) ); 	// Wait for FIFO to fill, this will continue till fifo fills up
 		while(inportb(0xff74)&0x40);
 		l=j%V;									// Modulo operation for doing the running average.
@@ -147,21 +154,21 @@ void main(void)
 		}
 		if(ten.tern.times==0)						// Check the gain setting switch in the ACM chassis (PRE_AMP defined)
 		{
-			gain=10;							// Gain value based on the switch position
-			hkTrip=10.0; 						// House keeping trip point based on the switch position
+			gain=50;							// Gain value based on the switch position
+			hkTrip=(10.0*freq)/(2.0*gain);
 		}
 		else
 		{
-			gain= 1;						
-			hkTrip=100.0;					
+			gain=50;						
+			hkTrip=(10.0*freq)/(2.0*gain);					
 		}
 		beamavg=0;		
 		beamavgDisp=0.0;// Clear the previous valued of beamavg
 		beamavg=(allwave/((K-BEG) * 255.0 * V));	// Calculate the beamavg based on an 8 bit A to D
 		beamavgDisp=(allwave2/((K-BEG) * 255.0 * VP));	// Calculate the beamavgDisp based on an 8 bit A to D
-		beamavg=(beamavg*12.5*(K-BEG))/(FACTOR*gain);	// Used 2.098 FACTOR to calculate beam current 
-		beamavgDisp=(beamavgDisp*12.5*(K-BEG))/(FACTOR*gain);	// Used 2.098 FACTOR to calculate beam current 
-		scharge=(wave[(j-1)%V]*12.5)/(255.0*FACTOR*gain);	// Calculate the beam current for latest pulse, supercharge check
+		beamavg=(beamavg*12.5*(K-BEG))*freq/(FACTOR*gain);	// Used 2.098 FACTOR to calculate beam current 
+		beamavgDisp=(beamavgDisp*12.5*(K-BEG))*freq/(FACTOR*gain);	// Used 2.098 FACTOR to calculate beam current 
+		scharge=(wave[(j-1)%V]*12.5)*freq/(255.0*FACTOR*gain);	// Calculate the beam current for latest pulse, supercharge check
 		outportb(CS_80M+0xa0, 0);				// RESET FIFO low active
 		outportb(CS_80M+0xa0, 1);				// RESET high
 		//housekeeping 
@@ -182,10 +189,21 @@ void main(void)
 			house=house+inportb(CS_80M+0xc0);	// Grab the data and integrate
 		}
 		hkavg=(house/(255.0*(N-BEG)));			// Convert the house keeping value to floating point
-		hkavg=hkavg*12.5*(N-BEG)/(FACTOR*gain); // Calculate the house keeping value based on gain,FACTOR,12.5 ns
+		hkavg=hkavg*12.5*(N-BEG)*freq/(FACTOR*gain); // Calculate the house keeping value based on gain,FACTOR,12.5 ns
 		outportb(CS_80M+0xa0, 0);				// RESET FIFO low active
 		outportb(CS_80M+0xa0, 1);				// RESET high
-		if(hkavg>hkTrip && beamavg<beamTrip && scharge<SFault) 	// generate heart beat if there is no trip
+		if(reset==0)				// If the trip reset button is pushed reset the trips	and trip values
+		{
+			btrip=0;
+			htrip=0;
+			strip=0;
+			flevel=0.0;
+			slevel=0.0;
+			freqlevel=0;
+            wdfault=0;
+			freqTrip=0;
+		} 
+		if(freq<11.0 && hkavg>hkTrip && beamavg<beamTrip && scharge<SFault)
 		{
 			outportb(0x101,0x00);								// Toggle U5 port 1 bit 2 to 0
 			WAIT(10);       									// Wait
@@ -193,29 +211,52 @@ void main(void)
 			WAIT(10);											// Wait
 			outportb(0x101,0x00);								// Toggle U5 port 1 bit 2 to 0
 		} 
-		if(ten.tern.tripreset==0)				// If the trip reset button is pushed reset the trips	and trip values
-		{
-			btrip=0;
-			htrip=0;
-			strip=0;
-			flevel=0;
-		}
 		if(beamavg>=beamTrip && btrip==0)	// Store the value that tripped the beam in flevel and keep it until reset
 		{
 			btrip=1;
 			flevel=(wave[(j-1)%V]/((K-BEG) * 255.0));
-			flevel=flevel*12.5*(K-BEG)/(FACTOR*gain);
+			flevel=flevel*12.5*(K-BEG)*freq/(FACTOR*gain);
+			do
+			{
+				ten.dummy=inportb(PPI10);
+			}while(ten.tern.tripreset==0);
+			reset=ten.tern.tripreset;
 		}
 		if(scharge>=SFault && strip==0)		// Store the valued that tripped the beam in slevel and keep it until reset
 		{
 			strip=1;
 			slevel=scharge;
+			do
+			{
+				ten.dummy=inportb(PPI10);
+			}while(ten.tern.tripreset==0);
+			reset=ten.tern.tripreset;
 		}
 		if(hkavg<hkTrip && htrip==0)		// Store the value that tripped the house in hkfault and keep it until reset
 		{
 			htrip=1;
 			hkfault=hkavg;
+			do
+			{
+				ten.dummy=inportb(PPI10);
+			}while(ten.tern.tripreset==0);
+			reset=ten.tern.tripreset;
 		} 
+		if(freq>11.0 && freqlevel==0 && reset==0)		// Store the value that tripped the house in hkfault and keep it until reset
+		{
+			freqlevel=1;
+			freqTrip=freq;
+			do
+			{
+				ten.dummy=inportb(PPI10);
+			}while(ten.tern.tripreset==0);
+			reset=ten.tern.tripreset;
+		}
+		if(strip==0 && btrip==0 && freqlevel==0 && htrip==0 && reset==1)
+		{
+			wdfault=1;
+			wdfaultlevel=freq;
+		}
 		if(ten.tern.tripSet==0) 				// Fall in if the key for changing the trip point has been turned
 		{
 			entered=0;					
@@ -245,83 +286,106 @@ void main(void)
 		timer=timer1-timer2;
 		t0_int=0;
 		timer2=t0_int;						//*65535; 
-		ledd = ~ledd;						// Convert the timer data into floating point frequency
 		freq=(double)(1000.0/timer);
-		fpbeam=(int)(beamavgDisp*100);			// Use the D/A to place on the front panel spiggot the beam average value
-		remtrip=(int)(flevel*100);			// Use the D/A to place the value faulting the system on rear output	
+		fpbeam=(int)(beamavgDisp*1000);			// Use the D/A to place on the front panel spiggot the beam average value
+		remtrip=(int)(flevel*1000);			// Use the D/A to place the value faulting the system on rear output	
 		ae_da(remtrip,fpbeam);
-		if((loop%5)==1) 					// Display every vth time
-		{	
+		if(t02>=1000)		// Display every seond
+		{
+			t02=0;
+			ledd = ~ledd;
 			led(ledd); 						// Blink the LED
 			if(page==1) 					//page 1
 			{
 				ppi_lcdcmd(0x01);
 				ppi_lcdcmd(0x02); 
-				sprintf(buf1,"BEAM  = %3.2f nA",beamavgDisp);
+				sprintf(buf1,"BEAM  = %6.2f nA       ",beamavgDisp);
 				ppi_lcdcmd(0x80);
 				ppi_lprintf(buf1);
-				ppi_lcdcmd(0x80);
-				ppi_lprintf(buf1);
-				if(btrip==1)
+				ppi_lcdcmd(0xA0);
+				ppi_lprintf(buf2);
+				if(freqlevel==1)
 				{
-					sprintf(buf2,"BEAM FAULT %3.2f nA",flevel);
+					sprintf(buf2,"RATE FAULT = %3.1f Hz",freqTrip);
 					ppi_lcdcmd(0xA0);
 					ppi_lprintf(buf2);
-					
+					sprintf(buf2,"                        ");
+				}
+				if(wdfault==1 && freqlevel==0)
+				{
+					sprintf(buf2,"WD FAULT FREQ = %3.1f Hz  ",wdfaultlevel);
+					ppi_lcdcmd(0xA0);
+					ppi_lprintf(buf2);
+					sprintf(buf2,"                        ");
+				}
+				if(wdfault==0 && freqlevel==0 && reset==0)
+				{
+					sprintf(buf2,"FREQ  = %3.1f Hz          ",freq);
+					ppi_lcdcmd(0xA0);
+					ppi_lprintf(buf2);
+					sprintf(buf2,"                        ");
+				}
+				if(wdfault==0 && freqlevel==0 && reset==1)
+				{
+					sprintf(buf2,"RESET FAULT TO CONTINUE");
+					ppi_lcdcmd(0xA0);
+					ppi_lprintf(buf2);
+					sprintf(buf2,"                        ");
+				}
+				if(btrip==1)
+				{
+					sprintf(buf3,"BEAM FAULT = %6.2f nA  ",flevel);	
 				}
 				if(strip==1)
 				{
-					sprintf(buf2,"SUPER FAULT %3.2f nA",slevel);
-					ppi_lcdcmd(0xA0);
-					ppi_lprintf(buf2);
-					
+					sprintf(buf3,"SUPER FAULT = %6.2f nA ",slevel);			
 				}
 				if(strip==0 && btrip==0)
 				{
-					sprintf(buf2,"FREQ  = %3.1f Hz",freq);
-					ppi_lcdcmd(0xA0);
-					ppi_lprintf(buf2);
+					sprintf(buf3,"BEAM TP  = %6.2f nA    ",beamTrip);
 				}
-				sprintf(buf3,"BEAM TP  = %3.2f nA",beamTrip);
 				ppi_lcdcmd(0xC0);
 				ppi_lprintf(buf3);
 				if(heart==0)
 				{
-					sprintf(buf4,"%c%c%c",31,31,31);
+					sprintf(buf4,"%c%c%c                     ",31,31,31);
 					heart=1;
 				}
 				else
 				{
-					sprintf(buf4,"       %c%c%c",30,30,30);
+					sprintf(buf4,"       %c%c%c              ",30,30,30);
 					heart=0;
 				}
+				if(htrip==1)
+					sprintf(buf4,"HOUSE KEEPING TRIP      ");
 				ppi_lcdcmd(0xE0);
 				ppi_lprintf(buf4);
+				sprintf(buf4,"                        ");
 			}	  
 			if(page==0) 						//page 2
 			{
 				ppi_lcdcmd(0x01);
 				ppi_lcdcmd(0x02); 
-				sprintf(buf5,"HOUSE KP = %3.2f nA",hkavg);
+				sprintf(buf5,"HOUSE KP = %6.2f nA    ",hkavg);
 				ppi_lcdcmd(0x80);
 				ppi_lprintf(buf5);
-				sprintf(buf6,"HOUSE TP = %3.2f nA",hkTrip);
+				sprintf(buf6,"HOUSE TP = %6.2f nA    ",hkTrip);
 				ppi_lcdcmd(0xA0);
 				ppi_lprintf(buf6);
 				if(htrip==0)
-					sprintf(buf7,"Gain     =  %3d",gain);
+					sprintf(buf7,"Gain     =  %3d         ",gain);
 				if(htrip==1)
-					sprintf(buf7,"HK FAULT  %3.2fnA",hkfault);
+					sprintf(buf7,"HK FAULT  = %6.2f nA   ",hkfault);
 				ppi_lcdcmd(0xC0);
 				ppi_lprintf(buf7); 
 				if(heart==0)
 				{
-					sprintf(buf4,"%c%c%c",31,31,31);
+					sprintf(buf4,"%c%c%c                     ",31,31,31);
 					heart=1;
 				}
 				else
 				{
-					sprintf(buf4,"       %c%c%c",30,30,30);
+					sprintf(buf4,"       %c%c%c              ",30,30,30);
 					heart=0;
 				}
 				ppi_lcdcmd(0xE0);
@@ -382,8 +446,8 @@ void Acminit(void)
  
 void ppi_lcd_init(void)
 {
-    unsigned int m;
-    outportb(PPICMD,0x80);			// all output
+	unsigned int m;
+	delay_ms(40);
     outportb(PPI1,0);   
     outportb(PPI0, 0);
     outportb(PPI2,0);				// LCD=I27, R/W=I25, A0=I26 low
@@ -435,20 +499,19 @@ void ppi_lprintf(char* str)
 void    interrupt far t0_isr (void)
 {
     t0_int++;
-	if(((t0_int%1000)==0) && trig==1)
+	t02++;
+	if((t0_int==4000) && trig==1)
 	{
-		sprintf(buf2,"NO TRIGGER           ");
+		sprintf(buf2,"NO TRIGGER              ");
 		ppi_lcdcmd(0xA0);
 		ppi_lprintf(buf2);
 	}
-	if(((t0_int%1000)==0) && trig==0)
+	if((t0_int==4000) && trig==0)
 	{
-		sprintf(buf2,"BUFFER NOT GETTING FULL");
+		sprintf(buf2,"BUFFER NOT GETTING FULL ");
 		ppi_lcdcmd(0xA0);
 		ppi_lprintf(buf2);
 	}
-
-
 	
 	//  /* Issue EOI for the interrupt */
     outport(0xff22,0x8000);

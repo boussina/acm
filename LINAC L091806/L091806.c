@@ -154,7 +154,7 @@ void main(void)
 		}
 		if(ten.tern.times==0)						// Check the gain setting switch in the ACM chassis (PRE_AMP defined)
 		{
-			gain=5;							// Gain value based on the switch position
+			gain=10;							// Gain value based on the switch position
 			hkTrip=10.0*freq/gain;
 		}
 		else
@@ -201,9 +201,9 @@ void main(void)
 			slevel=0.0;
 			freqlevel=0;
             wdfault=0;
-			freqTrip=0.0;
-		}
-		if(freq<=5.5  && hkavg>hkTrip && beamavg<beamTrip && scharge<SFault) 	// generate heart beat if there is no trip
+			freqTrip=0;
+		} 
+		if(freq<11.0 && hkavg>hkTrip && beamavg<beamTrip && scharge<SFault)
 		{
 			outportb(0x101,0x00);								// Toggle U5 port 1 bit 2 to 0
 			WAIT(10);       									// Wait
@@ -216,21 +216,41 @@ void main(void)
 			btrip=1;
 			flevel=(wave[(j-1)%V]/((K-BEG) * 255.0));
 			flevel=flevel*12.5*(K-BEG)*freq/(FACTOR*gain);
+			do
+			{
+				ten.dummy=inportb(PPI10);
+			}while(ten.tern.tripreset==0);
+			reset=ten.tern.tripreset;
 		}
 		if(scharge>=SFault && strip==0)		// Store the valued that tripped the beam in slevel and keep it until reset
 		{
 			strip=1;
 			slevel=scharge;
+			do
+			{
+				ten.dummy=inportb(PPI10);
+			}while(ten.tern.tripreset==0);
+			reset=ten.tern.tripreset;
 		}
 		if(hkavg<hkTrip && htrip==0)		// Store the value that tripped the house in hkfault and keep it until reset
 		{
 			htrip=1;
 			hkfault=hkavg;
+			do
+			{
+				ten.dummy=inportb(PPI10);
+			}while(ten.tern.tripreset==0);
+			reset=ten.tern.tripreset;
 		} 
-		if(freq>=5.5 && freqlevel==0)		// Store the value that tripped the house in hkfault and keep it until reset
+		if(freq>11.0 && freqlevel==0 && reset==0)		// Store the value that tripped the house in hkfault and keep it until reset
 		{
 			freqlevel=1;
 			freqTrip=freq;
+			do
+			{
+				ten.dummy=inportb(PPI10);
+			}while(ten.tern.tripreset==0);
+			reset=ten.tern.tripreset;
 		}
 		if(strip==0 && btrip==0 && freqlevel==0 && htrip==0 && reset==1)
 		{
@@ -267,7 +287,7 @@ void main(void)
 		t0_int=0;
 		timer2=t0_int;						//*65535; 
 		freq=(double)(1000.0/timer);
-		fpbeam=(int)(beamavg*100);			// Use the D/A to place on the front panel spiggot the beam average value
+		fpbeam=(int)(beamavgDisp*100);			// Use the D/A to place on the front panel spiggot the beam average value
 		remtrip=(int)(flevel*100);			// Use the D/A to place the value faulting the system on rear output	
 		ae_da(remtrip,fpbeam);
 		if(t02>=1000)		// Display every seond
@@ -279,14 +299,14 @@ void main(void)
 			{
 				ppi_lcdcmd(0x01);
 				ppi_lcdcmd(0x02); 
-				sprintf(buf1,"BEAM  = %6.2f nA       ",beamavg);
+				sprintf(buf1,"BEAM  = %6.2f nA       ",beamavgDisp);
 				ppi_lcdcmd(0x80);
 				ppi_lprintf(buf1);
 				ppi_lcdcmd(0xA0);
 				ppi_lprintf(buf2);
 				if(freqlevel==1)
 				{
-					sprintf(buf2,"RATE HIGH FAULT = %3.1f Hz",freqTrip);
+					sprintf(buf2,"RATE FAULT = %3.1f Hz",freqTrip);
 					ppi_lcdcmd(0xA0);
 					ppi_lprintf(buf2);
 					sprintf(buf2,"                        ");
@@ -298,9 +318,16 @@ void main(void)
 					ppi_lprintf(buf2);
 					sprintf(buf2,"                        ");
 				}
-				if(wdfault==0 && freqlevel==0)
+				if(wdfault==0 && freqlevel==0 && reset==0)
 				{
 					sprintf(buf2,"FREQ  = %3.1f Hz          ",freq);
+					ppi_lcdcmd(0xA0);
+					ppi_lprintf(buf2);
+					sprintf(buf2,"                        ");
+				}
+				if(wdfault==0 && freqlevel==0 && reset==1)
+				{
+					sprintf(buf2,"RESET FAULT TO CONTINUE");
 					ppi_lcdcmd(0xA0);
 					ppi_lprintf(buf2);
 					sprintf(buf2,"                        ");

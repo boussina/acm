@@ -1,0 +1,4 @@
+1.
+
+The Digital power supply had to be lowered in the value, because
+the displays were too dark.
